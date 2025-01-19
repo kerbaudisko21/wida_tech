@@ -70,23 +70,58 @@ export const createInvoice = async (req, res = null, next) => {
 };
 
 export const getAllInvoices = async (req, res, next) => {
+    const { date, size = 10, page = 1 } = req.query;
+
     try {
-        const invoices = await executeQuery('SELECT * FROM Invoices', []);
+        if (!date) return res.status(400).json({ success: false, message: 'Date parameter is required' });
+        
+        const limit = parseInt(size, 10);
+        const offset = (parseInt(page, 10) - 1) * limit;
+
+        const invoices = await executeQuery(
+            `SELECT * FROM Invoices WHERE DATE = ? LIMIT ? OFFSET ?`,
+            [date, limit, offset]
+        );
+        
         if (invoices.length === 0) return res.status(404).json({ success: false, message: 'No invoices found' });
 
-        const invoicesWithProducts = await Promise.all(invoices.map(async (invoice) => {
-            const products = await executeQuery('SELECT * FROM Products WHERE invoice_no = ?', [invoice.invoice_no]);
-            return {
-                invoice: invoice,
-                products: products,
-            };
-        }));
+        const invoicesWithProducts = await Promise.all(
+            invoices.map(async (invoice) => {
+                const products = await executeQuery('SELECT * FROM Products WHERE invoice_no = ?', [invoice.invoice_no]);
+                return {
+                    invoice: invoice,
+                    products: products,
+                };
+            })
+        );
+        // Calculate total profit for the specified date
+        const profitResult = await executeQuery(
+            `SELECT SUM(total_price_sold - total_cost_of_goods_sold) AS total_profit FROM Products 
+             INNER JOIN Invoices ON Products.invoice_no = Invoices.invoice_no 
+             WHERE Invoices.DATE = ?`,
+            [date]
+        );
+        const totalProfit = profitResult[0]?.total_profit || 0;
 
-        return res.status(200).json({ success: true, data: invoicesWithProducts });
+        const cashResult = await executeQuery(
+            `SELECT COUNT(*) AS cash_transactions FROM Invoices WHERE DATE = ? AND payment_type = 'CASH'`,
+            [date]
+        );
+        const totalCashTransactions = cashResult[0]?.cash_transactions || 0;
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                invoices: invoicesWithProducts,
+                totalProfit,
+                totalCashTransactions,
+            },
+        });
     } catch (err) {
         next(err);
     }
 };
+
 
 export const getInvoice = async (req, res, next) => {
     const { invoice_no } = req.params;
@@ -293,7 +328,6 @@ export const uploadInvoiceFile = async (req, res) => {
                 errorMessages.push(`Invoice No ${productInvoiceNo}: Product can not be inserted due to non-existent invoice number.`);
             }
         });
-
         if (errorMessages.length > 0) {
             return res.status(400).json({
                 success: false,
